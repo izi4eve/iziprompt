@@ -17,6 +17,7 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
   CameraController? _cameraController;
   bool _isInitialized = false;
   bool _permissionGranted = false;
+  bool _isFrontCamera = false;
 
   @override
   void initState() {
@@ -28,7 +29,7 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
     final cameraStatus = await Permission.camera.request();
     final microphoneStatus = await Permission.microphone.request();
     final storageStatus = await Permission.storage.request();
-    
+
     if (cameraStatus.isGranted && microphoneStatus.isGranted) {
       setState(() {
         _permissionGranted = true;
@@ -41,21 +42,20 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
     try {
       final cameras = await ref.read(availableCamerasProvider.future);
       final settings = ref.read(appSettingsProvider);
-      
+
       if (cameras.isEmpty) return;
-      
+
       // Фильтруем только основные камеры (исключаем телефото и ультраширокие)
       final mainCameras = cameras.where((camera) {
         // Оставляем только основные камеры по направлению
-        return camera.lensDirection == CameraLensDirection.back || 
-               camera.lensDirection == CameraLensDirection.front;
+        return camera.lensDirection == CameraLensDirection.back || camera.lensDirection == CameraLensDirection.front;
       }).toList();
-      
+
       // Берем первую заднюю и первую переднюю
       final uniqueCameras = <CameraDescription>[];
       CameraDescription? backCamera;
       CameraDescription? frontCamera;
-      
+
       for (final camera in mainCameras) {
         if (camera.lensDirection == CameraLensDirection.back && backCamera == null) {
           backCamera = camera;
@@ -64,16 +64,14 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
           frontCamera = camera;
         }
       }
-      
+
       if (backCamera != null) uniqueCameras.add(backCamera);
       if (frontCamera != null) uniqueCameras.add(frontCamera);
-      
+
       if (uniqueCameras.isEmpty) return;
-      
-      final cameraIndex = settings.selectedCameraIndex < uniqueCameras.length 
-          ? settings.selectedCameraIndex 
-          : 0;
-      
+
+      final cameraIndex = settings.selectedCameraIndex < uniqueCameras.length ? settings.selectedCameraIndex : 0;
+
       _cameraController = CameraController(
         uniqueCameras[cameraIndex],
         settings.resolution,
@@ -81,8 +79,11 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
         imageFormatGroup: ImageFormatGroup.jpeg,
       );
 
+      // Сохраняем информацию о типе камеры
+      _isFrontCamera = uniqueCameras[cameraIndex].lensDirection == CameraLensDirection.front;
+
       await _cameraController!.initialize();
-      
+
       if (mounted) {
         setState(() {
           _isInitialized = true;
@@ -120,16 +121,13 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
             child: Stack(
               children: [
                 // Камера выровнена по верху
-                Align(
-                  alignment: Alignment.topCenter,
-                  child: _buildCameraPreview(),
-                ),
+                Align(alignment: Alignment.topCenter, child: _buildCameraPreview()),
                 // Композиционная сетка
                 if (_isInitialized) _buildCompositionGrid(),
               ],
             ),
           ),
-          
+
           // Панель управления камерой - выровнена по низу
           Container(
             height: 80,
@@ -139,7 +137,9 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
             child: camerasAsync.when(
               data: (cameras) => _buildCameraControls(cameras, settings, settingsNotifier, isRecording),
               loading: () => const Center(child: CircularProgressIndicator()),
-              error: (error, stack) => Center(child: Text('Ошибка: $error', style: TextStyle(color: Colors.white))),
+              error: (error, stack) => Center(
+                child: Text('Ошибка: $error', style: TextStyle(color: Colors.white)),
+              ),
             ),
           ),
         ],
@@ -166,26 +166,32 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
     }
 
     if (!_isInitialized || _cameraController == null || !_cameraController!.value.isInitialized) {
-      return const Center(
-        child: CircularProgressIndicator(color: Colors.white),
+      return const Center(child: CircularProgressIndicator(color: Colors.white));
+    }
+
+    Widget cameraPreview = AspectRatio(aspectRatio: 16 / 9, child: CameraPreview(_cameraController!));
+
+    // Проверяем состояние записи напрямую у контроллера камеры
+    // для более точного определения момента записи
+    final isActuallyRecording = _cameraController!.value.isRecordingVideo;
+
+    // Применяем отражение для фронтальной камеры ТОЛЬКО ВО ВРЕМЯ записи
+    if (_isFrontCamera && isActuallyRecording) {
+      cameraPreview = Transform(
+        alignment: Alignment.center,
+        transform: Matrix4.identity()..scale(-1.0, 1.0), // Отражение по горизонтали
+        child: cameraPreview,
       );
     }
 
-    // Обеспечиваем соотношение 16:9 и фиксируем ориентацию
-    return AspectRatio(
-      aspectRatio: 16 / 9,
-      child: CameraPreview(_cameraController!),
-    );
+    return cameraPreview;
   }
 
   // Композиционная сетка 4x4
   Widget _buildCompositionGrid() {
     return AspectRatio(
       aspectRatio: 16 / 9,
-      child: CustomPaint(
-        painter: CompositionGridPainter(),
-        size: Size.infinite,
-      ),
+      child: CustomPaint(painter: CompositionGridPainter(), size: Size.infinite),
     );
   }
 
@@ -197,14 +203,13 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
   ) {
     // Фильтруем камеры так же, как в _initializeCamera
     final mainCameras = cameras.where((camera) {
-      return camera.lensDirection == CameraLensDirection.back || 
-             camera.lensDirection == CameraLensDirection.front;
+      return camera.lensDirection == CameraLensDirection.back || camera.lensDirection == CameraLensDirection.front;
     }).toList();
-    
+
     final uniqueCameras = <CameraDescription>[];
     CameraDescription? backCamera;
     CameraDescription? frontCamera;
-    
+
     for (final camera in mainCameras) {
       if (camera.lensDirection == CameraLensDirection.back && backCamera == null) {
         backCamera = camera;
@@ -213,7 +218,7 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
         frontCamera = camera;
       }
     }
-    
+
     if (backCamera != null) uniqueCameras.add(backCamera);
     if (frontCamera != null) uniqueCameras.add(frontCamera);
 
@@ -223,9 +228,7 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
         SizedBox(
           width: 80,
           child: DropdownButton<int>(
-            value: settings.selectedCameraIndex < uniqueCameras.length 
-                ? settings.selectedCameraIndex 
-                : 0,
+            value: settings.selectedCameraIndex < uniqueCameras.length ? settings.selectedCameraIndex : 0,
             dropdownColor: Colors.grey[800],
             style: const TextStyle(color: Colors.white, fontSize: 11),
             isExpanded: true,
@@ -234,9 +237,7 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
               return DropdownMenuItem<int>(
                 value: entry.key,
                 child: Text(
-                  entry.value.lensDirection == CameraLensDirection.back 
-                      ? 'Задняя' 
-                      : 'Перед',
+                  entry.value.lensDirection == CameraLensDirection.back ? 'Задняя' : 'Перед',
                   overflow: TextOverflow.ellipsis,
                 ),
               );
@@ -249,9 +250,9 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
             },
           ),
         ),
-        
+
         const SizedBox(width: 4),
-        
+
         // Выбор разрешения
         SizedBox(
           width: 60,
@@ -261,34 +262,32 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
             style: const TextStyle(color: Colors.white, fontSize: 11),
             isExpanded: true,
             underline: Container(),
-            items: [
-              ResolutionPreset.medium,
-              ResolutionPreset.high,
-              ResolutionPreset.veryHigh,
-              ResolutionPreset.ultraHigh,
-            ].map((preset) {
-              String label;
-              switch (preset) {
-                case ResolutionPreset.medium:
-                  label = 'HD';
-                  break;
-                case ResolutionPreset.high:
-                  label = 'FHD';
-                  break;
-                case ResolutionPreset.veryHigh:
-                  label = 'UHD';
-                  break;
-                case ResolutionPreset.ultraHigh:
-                  label = '4K';
-                  break;
-                default:
-                  label = 'HD';
-              }
-              return DropdownMenuItem<ResolutionPreset>(
-                value: preset,
-                child: Text(label),
-              );
-            }).toList(),
+            items:
+                [
+                  ResolutionPreset.medium,
+                  ResolutionPreset.high,
+                  ResolutionPreset.veryHigh,
+                  ResolutionPreset.ultraHigh,
+                ].map((preset) {
+                  String label;
+                  switch (preset) {
+                    case ResolutionPreset.medium:
+                      label = 'HD';
+                      break;
+                    case ResolutionPreset.high:
+                      label = 'FHD';
+                      break;
+                    case ResolutionPreset.veryHigh:
+                      label = 'UHD';
+                      break;
+                    case ResolutionPreset.ultraHigh:
+                      label = '4K';
+                      break;
+                    default:
+                      label = 'HD';
+                  }
+                  return DropdownMenuItem<ResolutionPreset>(value: preset, child: Text(label));
+                }).toList(),
             onChanged: (value) {
               if (value != null && value != settings.resolution) {
                 settingsNotifier.updateCameraSettings(resolution: value);
@@ -297,9 +296,9 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
             },
           ),
         ),
-        
+
         const SizedBox(width: 4),
-        
+
         // FPS
         SizedBox(
           width: 60,
@@ -310,10 +309,7 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
             isExpanded: true,
             underline: Container(),
             items: [24, 30, 60].map((fps) {
-              return DropdownMenuItem<int>(
-                value: fps,
-                child: Text('${fps}fps'),
-              );
+              return DropdownMenuItem<int>(value: fps, child: Text('${fps}fps'));
             }).toList(),
             onChanged: (value) {
               if (value != null) {
@@ -322,9 +318,9 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
             },
           ),
         ),
-        
+
         const SizedBox(width: 4),
-        
+
         // Экспозиция - увеличили ширину и добавили защиту от ошибок
         Expanded(
           child: Column(
@@ -338,27 +334,31 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
                 divisions: 40,
                 activeColor: Colors.white,
                 inactiveColor: Colors.grey,
-                onChanged: _cameraController != null && _isInitialized ? (value) {
-                  settingsNotifier.updateCameraSettings(exposureOffset: value);
-                  // Вызываем setExposureOffset с защитой от ошибок
-                  _setExposureOffset(value);
-                } : null,
+                onChanged: _cameraController != null && _isInitialized
+                    ? (value) {
+                        settingsNotifier.updateCameraSettings(exposureOffset: value);
+                        // Вызываем setExposureOffset с защитой от ошибок
+                        _setExposureOffset(value);
+                      }
+                    : null,
               ),
             ],
           ),
         ),
-        
+
         const SizedBox(width: 8),
-        
+
         // Кнопка записи
         IconButton(
-          onPressed: _cameraController != null && _isInitialized ? () {
-            if (isRecording) {
-              _stopRecording();
-            } else {
-              _startRecording();
-            }
-          } : null,
+          onPressed: _cameraController != null && _isInitialized
+              ? () {
+                  if (isRecording) {
+                    _stopRecording();
+                  } else {
+                    _startRecording();
+                  }
+                }
+              : null,
           icon: Icon(
             isRecording ? Icons.stop : Icons.play_arrow,
             color: isRecording ? Colors.red : Colors.white,
@@ -373,7 +373,7 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
     try {
       if (_cameraController != null) {
         final wasRecording = ref.read(isRecordingProvider);
-        
+
         // Останавливаем запись если была активна
         if (wasRecording && _cameraController!.value.isRecordingVideo) {
           try {
@@ -383,19 +383,19 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
             debugPrint('Ошибка остановки записи при переинициализации: $e');
           }
         }
-        
+
         // Сначала меняем состояние, чтобы UI не пытался использовать контроллер
         setState(() {
           _isInitialized = false;
         });
-        
+
         await _cameraController!.dispose();
         _cameraController = null;
-        
+
         // Небольшая задержка для завершения dispose
         await Future.delayed(const Duration(milliseconds: 200));
       }
-      
+
       await _initializeCamera();
     } catch (e) {
       debugPrint('Ошибка переинициализации камеры: $e');
@@ -419,7 +419,7 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
 
   Future<String> _getVideoSavePath() async {
     Directory? directory;
-    
+
     if (Platform.isAndroid) {
       // Для Android используем внешнее хранилище
       directory = await getExternalStorageDirectory();
@@ -437,11 +437,11 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
       directory = await getApplicationDocumentsDirectory();
       directory = Directory('${directory.path}/IziPrompt_Videos');
     }
-    
+
     if (!await directory.exists()) {
       await directory.create(recursive: true);
     }
-    
+
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     return '${directory.path}/video_$timestamp.mp4';
   }
@@ -459,12 +459,9 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
     } catch (e) {
       debugPrint('Ошибка начала записи: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Ошибка начала записи: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Ошибка начала записи: $e'), backgroundColor: Colors.red));
       }
     }
   }
@@ -478,20 +475,20 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
     try {
       final videoFile = await _cameraController!.stopVideoRecording();
       ref.read(isRecordingProvider.notifier).state = false;
-      
+
       // Получаем путь для сохранения
       final savePath = await _getVideoSavePath();
       final savedFile = await File(videoFile.path).copy(savePath);
-      
+
       // Удаляем временный файл
       try {
         await File(videoFile.path).delete();
       } catch (e) {
         debugPrint('Не удалось удалить временный файл: $e');
       }
-      
+
       debugPrint('Видео сохранено: $savePath');
-      
+
       // Показываем уведомление о сохранении
       if (mounted) {
         final fileName = savePath.split('/').last;
@@ -510,11 +507,7 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
             ),
             duration: const Duration(seconds: 5),
             backgroundColor: Colors.green,
-            action: SnackBarAction(
-              label: 'OK',
-              textColor: Colors.white,
-              onPressed: () {},
-            ),
+            action: SnackBarAction(label: 'OK', textColor: Colors.white, onPressed: () {}),
           ),
         );
       }
@@ -522,12 +515,9 @@ class _CameraPanelState extends ConsumerState<CameraPanel> {
       debugPrint('Ошибка остановки записи: $e');
       ref.read(isRecordingProvider.notifier).state = false;
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Ошибка остановки записи: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Ошибка остановки записи: $e'), backgroundColor: Colors.red));
       }
     }
   }
@@ -545,21 +535,13 @@ class CompositionGridPainter extends CustomPainter {
     // Рисуем вертикальные линии (3 линии для создания 4 столбцов)
     for (int i = 1; i < 4; i++) {
       final x = size.width / 4 * i;
-      canvas.drawLine(
-        Offset(x, 0),
-        Offset(x, size.height),
-        paint,
-      );
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
     }
 
     // Рисуем горизонтальные линии (3 линии для создания 4 строк)
     for (int i = 1; i < 4; i++) {
       final y = size.height / 4 * i;
-      canvas.drawLine(
-        Offset(0, y),
-        Offset(size.width, y),
-        paint,
-      );
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
     }
   }
 
